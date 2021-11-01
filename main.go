@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +15,17 @@ import (
 
 var noTearErr = errors.New("体力耗尽")
 var noPayErr = errors.New("raca费用不足")
+
+// 格局
+// var accessToken = "aLjKW+psDuHnZkS7Mtp+hQ=="
+// var fromAddress = "0x986391e27aaDa4783560BaA814a2394cA332187A"
+
+// 自己
+// var accessToken = "nvTDKq0XeBJ8a1knniaS4Q=="
+// var fromAddress = "0x986391e27aaDa4783560BaA814a2394cA332187A"
+
+// var accessToken = "ei5O3v4WxgogjQQInd7U2g=="
+// var fromAddress = "0x9cde111038293EBb593aFb6A2e73Ab1314697270"
 
 var (
 	accessToken string
@@ -172,6 +182,7 @@ type Metamon struct {
 	Level  int `json:"level"`
 	Exp    int `json:"exp"`
 	ExpMax int `json:"expMax"`
+	Tear   int `json:"tear"`
 }
 
 type GetAllMetaMonResult struct {
@@ -188,7 +199,9 @@ type MetaMonProp struct {
 
 func getAvailMetaMon() ([]Metamon, error) {
 	api := "https://metamon-api.radiocaca.com/usm-api/getWalletPropertyList"
-	resp, err := req.Post(api, req.Param{"address": fromAddress, "pageSize": 300})
+	resp, err := req.Post(
+		api, req.Param{"address": fromAddress, "pageSize": 300}, req.Header{"accesstoken": accessToken},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -203,38 +216,11 @@ func getAvailMetaMon() ([]Metamon, error) {
 	}
 
 	var metamons []Metamon
-	var wg sync.WaitGroup
-	c := make(chan Metamon)
 
 	for _, meta := range rs.Data.MetamonList {
-		wg.Add(1)
-		go func(meta Metamon) {
-			defer wg.Done()
-			sresp, err := req.Post(
-				"https://metamon-api.radiocaca.com/usm-api/getMetamonProperties",
-				req.Param{"address": fromAddress, "metamonId": strconv.Itoa(meta.ID)},
-			)
-			if err != nil {
-				return
-			}
-			var metaMonProp MetaMonProp
-			err = sresp.ToJSON(&metaMonProp)
-			if err != nil {
-				return
-			}
-			if metaMonProp.Data.Tear > 0 {
-				c <- meta
-			}
-		}(meta)
-	}
-
-	go func() {
-		wg.Wait()
-		close(c)
-	}()
-
-	for meta := range c {
-		metamons = append(metamons, meta)
+		if meta.Tear > 0 {
+			metamons = append(metamons, meta)
+		}
 	}
 
 	return metamons, nil
@@ -257,6 +243,7 @@ func getBattelObject(metaID int) (int, error) {
 			"metamonId": metaID,
 			"front":     1,
 		},
+		req.Header{"accesstoken": accessToken},
 	)
 	if err != nil {
 		return 0, err
@@ -373,7 +360,7 @@ func updateLevel() error {
 				updateApi, req.Param{
 					"address": fromAddress,
 					"nftId":   metamon.ID,
-				},
+				}, req.Header{"accesstoken": accessToken},
 			)
 			if err != nil {
 				return err
