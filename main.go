@@ -16,17 +16,6 @@ import (
 var noTearErr = errors.New("体力耗尽")
 var noPayErr = errors.New("raca费用不足")
 
-// 格局
-// var accessToken = "aLjKW+psDuHnZkS7Mtp+hQ=="
-// var fromAddress = "0x986391e27aaDa4783560BaA814a2394cA332187A"
-
-// 自己
-// var accessToken = "nvTDKq0XeBJ8a1knniaS4Q=="
-// var fromAddress = "0x986391e27aaDa4783560BaA814a2394cA332187A"
-
-// var accessToken = "ei5O3v4WxgogjQQInd7U2g=="
-// var fromAddress = "0x9cde111038293EBb593aFb6A2e73Ab1314697270"
-
 var (
 	accessToken string
 	fromAddress string
