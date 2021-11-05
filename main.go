@@ -3,14 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/imroc/req"
+	"github.com/urfave/cli/v2"
+	"go.uber.org/atomic"
 	"math/rand"
 	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/imroc/req"
-	"github.com/urfave/cli/v2"
 )
 
 var noTearErr = errors.New("体力耗尽")
@@ -89,81 +89,95 @@ func main() {
 	}
 }
 
+var wg sync.WaitGroup
+
+func battleProcess(total, wins *atomic.Int32, metamon Metamon) {
+	defer wg.Done()
+	fmt.Printf("metamon %d 开始战斗\n", metamon.ID)
+	for {
+		bid, err := getBatteleObject(metamon.ID)
+		if err != nil {
+			fmt.Printf("metamon %d 获取对战对象失败\n", metamon)
+			fmt.Println(err)
+			continue
+		}
+		win, err := battle(metamon.ID, bid)
+		if err != nil {
+			if err == noTearErr {
+				fmt.Printf("metamon %d 没有体力\n", metamon.ID)
+				break
+			}
+			fmt.Printf("metamon %d 没有成功开始战斗,重试\n", metamon.ID)
+			fmt.Println(err)
+			continue
+		}
+
+		total.Add(1)
+		if win {
+			wins.Add(1)
+		}
+
+		racaCoin, _, err := checkBag()
+		if err != nil {
+			fmt.Println("获取背包失败,", err)
+			continue
+		}
+		if racaCoin < 50 {
+			for {
+				if racaCoin > 50 {
+					fmt.Println("raca余额足够，战斗继续")
+					break
+				} else {
+					fmt.Println("raca 余额不足，请充值")
+				}
+				racaCoin, _, err = checkBag()
+				if err != nil {
+					fmt.Println("获取背包失败,", err)
+					continue
+				}
+				time.Sleep(3 * time.Second)
+			}
+		}
+		if err = updateLevelByID(metamon.ID); err != nil {
+			fmt.Println(err)
+			continue
+		}
+	}
+}
+
 func start() {
+	total := atomic.NewInt32(int32(0))
+	wins := atomic.NewInt32(int32(0))
+
 	ms, err := getAvailMetaMon()
 	if err != nil {
 		panic(err)
 	}
 
-	var wg sync.WaitGroup
-	c := make(chan Metamon, 5)
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for metamon := range c {
-				fmt.Printf("metamon %d 开始战斗\n", metamon.ID)
-				for {
-					bid, err := getBattelObject(metamon.ID)
-					if err != nil {
-						fmt.Printf("metamon %d 获取对战对象失败\n", metamon)
-						fmt.Println(err)
-						break
-					}
-					err = battle(metamon.ID, bid)
-					if err != nil {
-						if err == noTearErr {
-							fmt.Printf("metamon %d 没有体力\n", metamon.ID)
-						} else {
-							fmt.Printf("metamon %d 没有成功开始战斗\n", metamon.ID)
-							fmt.Println(err)
-						}
-						break
-					}
-					racaCoin, pieceNum, err := checkBag()
-					if err != nil {
-						fmt.Println("获取背包失败,", err)
-						break
-					}
-					fmt.Printf("获得碎片:%d\n", pieceNum)
-					fmt.Printf("剩余raca余额:%d\n", racaCoin)
-					if racaCoin < 50 {
-						for {
-							if racaCoin > 50 {
-								fmt.Println("raca余额足够，战斗继续")
-								break
-							} else {
-								fmt.Println("raca 余额不足，请充值")
-							}
-							racaCoin, _, err = checkBag()
-							if err != nil {
-								fmt.Println("获取背包失败,", err)
-								break
-							}
-							time.Sleep(3 * time.Second)
-						}
-					}
-				}
-			}
-		}()
+	_, cpum, err := checkBag()
+	if err != nil {
+		panic(err)
+	}
+	if len(ms) == 0 {
+		fmt.Println("当前没有任何元兽有体力")
+		return
 	}
 
 	fmt.Printf("当前有%d只元兽有体力\n", len(ms))
 	for _, metamon := range ms {
-		c <- metamon
+		wg.Add(1)
+		go battleProcess(total, wins, metamon)
 	}
-	close(c)
 	wg.Wait()
+
+	_, pnum, err := checkBag()
+	fmt.Printf("战斗结束，当前碎片数量:%d，今天战斗获取数量:%d, 胜率:%.2f\n", pnum, pnum-cpum,
+		float64(wins.Load())/float64(total.Load()))
 
 	fmt.Println("战斗结束,开始mint")
 	if err := mint(); err != nil {
 		fmt.Println(err)
 	}
-	fmt.Println("mint 完成，开始升级")
-	if err := updateLevel(); err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println("")
 }
 
 type Metamon struct {
@@ -223,7 +237,7 @@ type BatterObjResult struct {
 	}
 }
 
-func getBattelObject(metaID int) (int, error) {
+func getBatteleObject(metaID int) (int, error) {
 	api := "https://metamon-api.radiocaca.com/usm-api/getBattelObjects"
 	resp, err := req.Post(
 		api,
@@ -254,7 +268,144 @@ func getBattelObject(metaID int) (int, error) {
 	return 0, err
 }
 
-func battle(metaIDA, metaIDB int) error {
+type BatterResult struct {
+	Code string `json:"code"`
+	Data struct {
+		BattleLevel      int `json:"battleLevel"`
+		BpFragmentNum    int `json:"bpFragmentNum"`
+		BpPotionNum      int `json:"bpPotionNum"`
+		ChallengeExp     int `json:"challengeExp"`
+		ChallengeLevel   int `json:"challengeLevel"`
+		ChallengeMonster struct {
+			Con           int         `json:"con"`
+			ConMax        int         `json:"conMax"`
+			CreateTime    string      `json:"createTime"`
+			Crg           int         `json:"crg"`
+			CrgMax        int         `json:"crgMax"`
+			Exp           int         `json:"exp"`
+			ExpMax        int         `json:"expMax"`
+			ID            int         `json:"id"`
+			ImageURL      string      `json:"imageUrl"`
+			Inte          int         `json:"inte"`
+			InteMax       int         `json:"inteMax"`
+			Inv           int         `json:"inv"`
+			InvMax        int         `json:"invMax"`
+			IsPlay        bool        `json:"isPlay"`
+			ItemID        int         `json:"itemId"`
+			ItemNum       int         `json:"itemNum"`
+			LastOwner     string      `json:"lastOwner"`
+			Level         int         `json:"level"`
+			LevelMax      int         `json:"levelMax"`
+			Life          int         `json:"life"`
+			LifeLL        int         `json:"lifeLL"`
+			Luk           int         `json:"luk"`
+			LukMax        int         `json:"lukMax"`
+			MonsterUpdate bool        `json:"monsterUpdate"`
+			Owner         string      `json:"owner"`
+			Race          string      `json:"race"`
+			Rarity        string      `json:"rarity"`
+			Sca           int         `json:"sca"`
+			ScaMax        int         `json:"scaMax"`
+			Status        int         `json:"status"`
+			Tear          int         `json:"tear"`
+			TokenID       interface{} `json:"tokenId"`
+			UpdateTime    string      `json:"updateTime"`
+			Years         int         `json:"years"`
+		} `json:"challengeMonster"`
+		ChallengeMonsterID int `json:"challengeMonsterId"`
+		ChallengeNft       struct {
+			ContractAddress string      `json:"contractAddress"`
+			CreatedAt       string      `json:"createdAt"`
+			Description     string      `json:"description"`
+			ID              int         `json:"id"`
+			ImageURL        string      `json:"imageUrl"`
+			Level           interface{} `json:"level"`
+			Metadata        string      `json:"metadata"`
+			Name            string      `json:"name"`
+			Owner           string      `json:"owner"`
+			Status          int         `json:"status"`
+			Symbol          string      `json:"symbol"`
+			TokenID         int         `json:"tokenId"`
+			UpdatedAt       string      `json:"updatedAt"`
+		} `json:"challengeNft"`
+		ChallengeOwner   string `json:"challengeOwner"`
+		ChallengeRecords []struct {
+			AttackType       int `json:"attackType"`
+			ChallengeID      int `json:"challengeId"`
+			DefenceType      int `json:"defenceType"`
+			ID               int `json:"id"`
+			MonsteraID       int `json:"monsteraId"`
+			MonsteraLife     int `json:"monsteraLife"`
+			MonsteraLifelost int `json:"monsteraLifelost"`
+			MonsterbID       int `json:"monsterbId"`
+			MonsterbLife     int `json:"monsterbLife"`
+			MonsterbLifelost int `json:"monsterbLifelost"`
+		} `json:"challengeRecords"`
+		ChallengeResult   bool `json:"challengeResult"`
+		ChallengedMonster struct {
+			Con           int         `json:"con"`
+			ConMax        int         `json:"conMax"`
+			CreateTime    string      `json:"createTime"`
+			Crg           int         `json:"crg"`
+			CrgMax        int         `json:"crgMax"`
+			Exp           int         `json:"exp"`
+			ExpMax        int         `json:"expMax"`
+			ID            int         `json:"id"`
+			ImageURL      string      `json:"imageUrl"`
+			Inte          int         `json:"inte"`
+			InteMax       int         `json:"inteMax"`
+			Inv           int         `json:"inv"`
+			InvMax        int         `json:"invMax"`
+			IsPlay        bool        `json:"isPlay"`
+			ItemID        int         `json:"itemId"`
+			ItemNum       int         `json:"itemNum"`
+			LastOwner     string      `json:"lastOwner"`
+			Level         int         `json:"level"`
+			LevelMax      int         `json:"levelMax"`
+			Life          int         `json:"life"`
+			LifeLL        int         `json:"lifeLL"`
+			Luk           int         `json:"luk"`
+			LukMax        int         `json:"lukMax"`
+			MonsterUpdate bool        `json:"monsterUpdate"`
+			Owner         string      `json:"owner"`
+			Race          string      `json:"race"`
+			Rarity        string      `json:"rarity"`
+			Sca           int         `json:"sca"`
+			ScaMax        int         `json:"scaMax"`
+			Status        int         `json:"status"`
+			Tear          int         `json:"tear"`
+			TokenID       interface{} `json:"tokenId"`
+			UpdateTime    string      `json:"updateTime"`
+			Years         int         `json:"years"`
+		} `json:"challengedMonster"`
+		ChallengedMonsterID int `json:"challengedMonsterId"`
+		ChallengedNft       struct {
+			ContractAddress string      `json:"contractAddress"`
+			CreatedAt       string      `json:"createdAt"`
+			Description     string      `json:"description"`
+			ID              int         `json:"id"`
+			ImageURL        string      `json:"imageUrl"`
+			Level           interface{} `json:"level"`
+			Metadata        string      `json:"metadata"`
+			Name            string      `json:"name"`
+			Owner           string      `json:"owner"`
+			Status          int         `json:"status"`
+			Symbol          string      `json:"symbol"`
+			TokenID         int         `json:"tokenId"`
+			UpdatedAt       string      `json:"updatedAt"`
+		} `json:"challengedNft"`
+		ChallengedOwner string      `json:"challengedOwner"`
+		CreateTime      interface{} `json:"createTime"`
+		ID              int         `json:"id"`
+		MonsterUpdate   bool        `json:"monsterUpdate"`
+		UpdateTime      interface{} `json:"updateTime"`
+	} `json:"data"`
+	ErrorText string `json:"errorText"`
+	Message   string `json:"message"`
+	Result    int    `json:"result"`
+}
+
+func battle(metaIDA, metaIDB int) (bool, error) {
 	api := "https://metamon-api.radiocaca.com/usm-api/startBattle"
 	resp, err := req.Post(
 		api, req.Param{
@@ -266,23 +417,24 @@ func battle(metaIDA, metaIDB int) error {
 		req.Header{"accesstoken": accessToken},
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
-
-	m := make(map[string]interface{})
-	err = resp.ToJSON(&m)
+	var result BatterResult
+	err = resp.ToJSON(&result)
 	if err != nil {
-		return err
+		return false, err
 	}
-	ors := m["result"].(float64)
-	if ors == 1 {
-		return nil
+	fmt.Println(result.Message)
+	if result.Result == 1 {
+		return result.Data.ChallengeResult, nil
 	}
-	msg := m["message"].(string)
-	if strings.Contains(msg, "You didn't pay for the game") {
-		return noPayErr
+	if strings.Contains(result.Message, "You didn't pay for the game") {
+		return false, noPayErr
 	}
-	return noTearErr
+	if strings.Contains(result.Message, "Energy") {
+		return false, noTearErr
+	}
+	return false, errors.New("unknown")
 }
 
 type BagItem struct {
@@ -325,6 +477,28 @@ func checkBag() (int, int, error) {
 	return racaCoin, pieceNum, nil
 }
 
+func updateLevelByID(nftID int) error {
+	updateApi := "https://metamon-api.radiocaca.com/usm-api/updateMonster"
+	resp, err := req.Post(
+		updateApi, req.Param{
+			"address": fromAddress,
+			"nftId":   nftID,
+		}, req.Header{"accesstoken": accessToken},
+	)
+	if err != nil {
+		return err
+	}
+	result := make(map[string]interface{})
+	if err = resp.ToJSON(&result); err != nil {
+		return err
+	}
+	if result["result"].(float64) != -1 {
+		fmt.Printf("metamon %d 升级\n", nftID)
+		return nil
+	}
+	return errors.New(fmt.Sprintf("metamon %d 尚未可以升级", nftID))
+}
+
 func updateLevel() error {
 	api := "https://metamon-api.radiocaca.com/usm-api/getWalletPropertyList"
 	resp, err := req.Post(api, req.Param{"address": fromAddress}, req.Header{"accesstoken": accessToken})
@@ -354,7 +528,11 @@ func updateLevel() error {
 			if err != nil {
 				return err
 			}
-			if resp.Response().StatusCode == 200 {
+			result := make(map[string]interface{})
+			if err = resp.ToJSON(&result); err != nil {
+				return err
+			}
+			if result["result"].(float64) != -1 {
 				fmt.Printf("metamon %d 升级\n", metamon.ID)
 			}
 		}
