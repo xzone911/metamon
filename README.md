@@ -36,3 +36,13 @@ raca 元兽游戏辅助脚本
 ### windows
 
 ./metamon.exe --address={钱包地址} --token={accesstoken} updatelevel
+
+## 开蛋（一次开完）
+
+### linux/mac
+
+./metamon --address={钱包地址} --token={accesstoken} openegg
+
+### windows
+
+./metamon.exe --address={钱包地址} --token={accesstoken} openegg
