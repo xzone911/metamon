@@ -3,14 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
-	"github.com/imroc/req"
-	"github.com/urfave/cli/v2"
-	"go.uber.org/atomic"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/imroc/req"
+	"github.com/urfave/cli/v2"
+	"go.uber.org/atomic"
 )
 
 var noTearErr = errors.New("体力耗尽")
@@ -105,7 +105,7 @@ func battleProcess(total, wins *atomic.Int32, metamon Metamon) {
 	defer wg.Done()
 	fmt.Printf("metamon %d 开始战斗\n", metamon.ID)
 	for {
-		bid, err := getBatteleObject(metamon.ID)
+		bid, err := getBatteleObject(metamon.ID, metamon.Level)
 		if err != nil {
 			fmt.Printf("metamon %d 获取对战对象失败\n", metamon)
 			fmt.Println(err)
@@ -181,8 +181,10 @@ func start() {
 	wg.Wait()
 
 	_, pnum, err := checkBag()
-	fmt.Printf("战斗结束，当前碎片数量:%d，今天战斗获取数量:%d, 胜率:%.2f\n", pnum, pnum-cpum,
-		float64(wins.Load())/float64(total.Load()))
+	fmt.Printf(
+		"战斗结束，当前碎片数量:%d，今天战斗获取数量:%d, 胜率:%.2f\n", pnum, pnum-cpum,
+		float64(wins.Load())/float64(total.Load()),
+	)
 
 	fmt.Println("战斗结束,开始mint")
 	if err := mint(); err != nil {
@@ -242,19 +244,26 @@ func getAvailMetaMon() ([]Metamon, error) {
 type BatterObjResult struct {
 	Data struct {
 		Objects []struct {
-			ID int `json:"id"`
+			ID  int `json:"id"`
+			Sca int `json:"sca"`
 		}
 	}
 }
 
-func getBatteleObject(metaID int) (int, error) {
+func getBatteleObject(metaID, level int) (int, error) {
 	api := "https://metamon-api.radiocaca.com/usm-api/getBattelObjects"
+	front := 1
+	if level >= 21 && level <= 40 {
+		front = 2
+	} else if level >= 41 && level <= 60 {
+		front = 3
+	}
 	resp, err := req.Post(
 		api,
 		req.Param{
 			"address":   fromAddress,
 			"metamonId": metaID,
-			"front":     1,
+			"front":     front,
 		},
 		req.Header{"accesstoken": accessToken},
 	)
@@ -266,16 +275,13 @@ func getBatteleObject(metaID int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	var ids []int
+	m := make(map[int]int)
+	var scas []int
 	for _, object := range objs.Data.Objects {
-		ids = append(ids, object.ID)
+		m[object.Sca] = object.ID
+		scas = append(scas, object.Sca)
 	}
-	if len(ids) > 0 {
-		r := rand.Int31n(int32(len(ids)))
-		return ids[int(r)], nil
-	}
-	return 0, err
+	return m[scas[0]], err
 }
 
 type BatterResult struct {
