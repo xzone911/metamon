@@ -92,6 +92,16 @@ func main() {
 					return nil
 				},
 			},
+			{
+				Name: "openegg",
+				Action: func(c *cli.Context) error {
+					if err := openEgg(); err != nil {
+						fmt.Println(err)
+						return err
+					}
+					return nil
+				},
+			},
 		},
 	}
 
@@ -399,5 +409,42 @@ func mint() (err error) {
 		}
 
 		return errors.New("没有足够碎片合成元兽蛋")
+	}
+}
+
+type OpenEggResult struct {
+	Code string `json:"code"`
+	Data struct {
+		Amount   int         `json:"amount"`
+		Category string      `json:"category"`
+		ID       interface{} `json:"id"`
+		ImageURL string      `json:"imageUrl"`
+		Rarity   interface{} `json:"rarity"`
+		Status   bool        `json:"status"`
+		TokenID  interface{} `json:"tokenId"`
+	} `json:"data"`
+	ErrorText string `json:"errorText"`
+	Message   string `json:"message"`
+	Result    int    `json:"result"`
+}
+
+func openEgg() error {
+	for {
+		api := "https://metamon-api.radiocaca.com/usm-api/openMonsterEgg"
+		resp, err := req.Post(api, req.Param{"address": fromAddress}, req.Header{"accesstoken": accessToken})
+		if err != nil {
+			return err
+		}
+
+		var result OpenEggResult
+		if err = resp.ToJSON(&result); err != nil {
+			return err
+		}
+		if result.Code == "SUCCESS" {
+			fmt.Printf("开蛋完成，开出:%s\n", result.Data.Category)
+			continue
+		}
+
+		return errors.New("没有可开的元兽蛋")
 	}
 }
